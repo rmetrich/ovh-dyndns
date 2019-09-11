@@ -12,6 +12,7 @@ help()
     echo "Help: possible arguments are:"
     echo "  --domain <domain>       : the domain on which update the A record in the DNS zone"
     echo "  --subdomain <subdomain> : (optional) the subdomain for this A record"
+    echo "  --ipaddr <ipaddr>       : (optional) the IP address to use"
     echo
 }
 
@@ -55,6 +56,7 @@ requestApi()
 
 updateIp()
 {
+    [ -z "$IP" ] || return
     IP=$(wget -q -O - $GET_IP_URL)
 }
 
@@ -92,6 +94,10 @@ parseArguments()
         --subdomain)
             shift
             SUBDOMAIN=$1
+            ;;
+        --ipaddr)
+            shift
+            IP=$1
             ;;
         esac
         shift
