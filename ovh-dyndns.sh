@@ -1,18 +1,21 @@
 #!/bin/bash
 
 # DEFAULT CONFIG
-LIBS="libs"
-GET_IP_URL="http://ipecho.net/plain"
-CURRENT_PATH="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-API_TARGET="EU"
+declare LIBS="libs"
+declare GET_IP_URL="http://ipecho.net/plain"
+declare CURRENT_PATH="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+declare API_TARGET="EU"
+
+declare -a SUBDOMAINS
+declare DOMAIN IP IDS HTTP_STATUS HTTP_RESPONSE
 
 help()
 {
     echo
     echo "Help: possible arguments are:"
-    echo "  --domain <domain>       : the domain on which update the A record in the DNS zone"
-    echo "  --subdomain <subdomain> : (optional) the subdomain for this A record"
-    echo "  --ipaddr <ipaddr>       : (optional) the IP address to use"
+    echo "  --domain <domain>             : the domain on which update the A record in the DNS zone"
+    echo "  --subdomain <subdomain> ...   : (optional) the subdomain for this A record"
+    echo "  --ipaddr <ipaddr>             : (optional) the IP address to use"
     echo
 }
 
@@ -27,30 +30,28 @@ checkInternetConnexion()
 
 requestApi()
 {
-    URL=$1
-    METHOD=$2
-    DATA=$3
+    local url=$1
+    local method=$2
+    local data=$3
     
-    PARAMS=("--target")
-    PARAMS+=("$API_TARGET")
+    local -a params=("--target")
+    params+=("$API_TARGET")
 
-    PARAMS+=("--url")
-    PARAMS+=("$URL")
+    params+=("--url")
+    params+=("$url")
     
-    if [ "$METHOD" ]
-    then
-        PARAMS+=("--method")
-        PARAMS+=("$METHOD")
+    if [ "$method" ]; then
+        params+=("--method")
+        params+=("$method")
     fi
 
-    if [ "$DATA" ]
-    then
-        PARAMS+=("--data")
-        PARAMS+=("$DATA")
+    if [ "$data" ]; then
+        params+=("--data")
+        params+=("$data")
     fi
-    RESPONSE=$( $CURRENT_PATH/ovh-api-bash-client.sh "${PARAMS[@]}" )
-    HTTP_STATUS="$( echo $RESPONSE | cut -d' ' -f1 )"
-    HTTP_RESPONSE="$( echo $RESPONSE | cut -d' ' -f2- )"
+    local response=$( $CURRENT_PATH/ovh-api-bash-client.sh "${params[@]}" )
+    HTTP_STATUS="$( echo $response | cut -d' ' -f1 )"
+    HTTP_RESPONSE="$( echo $response | cut -d' ' -f2- )"
     echo $HTTP_STATUS
 }
 
@@ -62,24 +63,24 @@ updateIp()
 
 getJSONString()
 {
-    JSON="$1"
-    FIELD="$2"
-    RESULT=$(getJSONValue "$JSON" "$FIELD")
-    echo ${RESULT:1:-1}
+    local json="$1"
+    local field="$2"
+    local result=$(getJSONValue "$json" "$field")
+    echo ${result:1:-1}
 }
 
 getJSONValue()
 {
-    JSON="$1"
-    FIELD="$2"
-    RESULT=$(echo $JSON | $CURRENT_PATH/$LIBS/JSON.sh -l | grep "\[$FIELD\]" | sed -r "s/\[$FIELD\]\s+(.*)/\1/")
-    echo ${RESULT}
+    local json="$1"
+    local field="$2"
+    local result=$(echo $json | $CURRENT_PATH/$LIBS/JSON.sh -l | grep "\[$field\]" | sed -r "s/\[$field\]\s+(.*)/\1/")
+    echo ${result}
 }
 
 getJSONArrayLength()
 {
-    JSON="$1"
-    echo $JSON | $CURRENT_PATH/$LIBS/JSON.sh -l | wc -l
+    local json="$1"
+    echo $json | $CURRENT_PATH/$LIBS/JSON.sh -l | wc -l
 }
 
 parseArguments()
@@ -93,7 +94,7 @@ parseArguments()
             ;;
         --subdomain)
             shift
-            SUBDOMAIN=$1
+            SUBDOMAINS+=( $1 )
             ;;
         --ipaddr)
             shift
@@ -106,11 +107,14 @@ parseArguments()
 
 checkArgumentsValids()
 {
-    if [ -z $DOMAIN ]
-    then
+    if [ -z "$DOMAIN" ]; then
         echo "No domain given"
         help
         exit 1
+    fi
+
+    if [ -z "${#SUBDOMAINS[@]}" ]; then
+        SUBDOMAINS=( "" )
     fi
 }
 
@@ -121,9 +125,9 @@ refreshZone()
 
 getIds ()
 {
-    requestApi "/domain/zone/$DOMAIN/record?subDomain=$SUBDOMAIN&fieldType=A" > /dev/null
-    if [ $HTTP_STATUS -ne 200 ]
-    then
+    local subdomain="$1"
+    requestApi "/domain/zone/$DOMAIN/record?subDomain=${subdomain}&fieldType=A" > /dev/null
+    if [ $HTTP_STATUS -ne 200 ]; then
         echo "Error: $HTTP_STATUS $HTTP_RESPONSE"
         exit 1
     fi
@@ -137,47 +141,56 @@ main()
     checkInternetConnexion
 
     updateIp
-    getIds
 
-    if [ $(getJSONArrayLength $IDS) -gt 1 ]
-    then
-        echo "Error, multiple results found for record"
-        echo "$IDS"
-        i=0
-        while [ $i -lt $(getJSONArrayLength $IDS) ]
-        do
-            CURRENT_ID=$(getJSONValue $IDS $i)
-            requestApi "/domain/zone/$DOMAIN/record/$CURRENT_ID" 'DELETE' > /dev/null
-            i=$((i+1))
-        done
-        echo "All results were deleted, will create a new record"
-        getIds
-    fi
+    local subdomain
+    local -i needRefresh=0
 
-    if [ $(getJSONArrayLength $IDS) -eq 0 ]
-    then
-        # No record found, create one
-        requestApi "/domain/zone/$DOMAIN/record" 'POST' '{"target": "'$IP'", "subDomain": "'$SUBDOMAIN'", "fieldType": "A", "ttl": 60}' > /dev/null
-        refreshZone
-        exit 0
-    fi
+    for subdomain in ${SUBDOMAINS[@]}; do
+        getIds $subdomain
 
-    RECORD=$(getJSONValue $IDS '0')
-    requestApi "/domain/zone/$DOMAIN/record/$RECORD" > /dev/null
-    if [ $HTTP_STATUS -ne 200 ]
-    then
-        echo "Error: $HTTP_STATUS $HTTP_RESPONSE"
-        exit 1
-    fi
-    RECORD_IP=$(getJSONString $HTTP_RESPONSE '"target"')
+        if [ $(getJSONArrayLength $IDS) -gt 1 ]
+        then
+            echo "Error, multiple results found for record"
+            echo "$IDS"
+            i=0
+            while [ $i -lt $(getJSONArrayLength $IDS) ]
+            do
+                local current_id=$(getJSONValue $IDS $i)
+                requestApi "/domain/zone/$DOMAIN/record/$current_id" 'DELETE' > /dev/null
+                i=$((i+1))
+            done
+            echo "All results were deleted, will create a new record"
+            getIds $subdomain
+        fi
 
-    if [ $IP != $RECORD_IP ]
-    then
-        requestApi "/domain/zone/$DOMAIN/record/$RECORD" 'PUT' '{"target":"'$IP'", "ttl": 60}' > /dev/null
+        if [ $(getJSONArrayLength $IDS) -eq 0 ]
+        then
+            # No record found, create one
+            requestApi "/domain/zone/$DOMAIN/record" 'POST' '{"target": "'$IP'", "subDomain": "'$subdomain'", "fieldType": "A", "ttl": 60}' > /dev/null
+            refreshZone
+            exit 0
+        fi
+
+        local record=$(getJSONValue $IDS '0')
+        requestApi "/domain/zone/$DOMAIN/record/$record" > /dev/null
+        if [ $HTTP_STATUS -ne 200 ]
+        then
+            echo "Error: $HTTP_STATUS $HTTP_RESPONSE"
+            exit 1
+        fi
+        local record_ip=$(getJSONString $HTTP_RESPONSE '"target"')
+
+        if [ $IP != $record_ip ]
+        then
+            requestApi "/domain/zone/$DOMAIN/record/$record" 'PUT' '{"target":"'$IP'", "ttl": 60}' > /dev/null
+            needRefresh=1
+        fi
+
+    done
+
+    if [ $needRefresh -eq 1 ]; then
         refreshZone
     fi
 }
 
-
 main "$@"
-
